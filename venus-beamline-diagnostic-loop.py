@@ -1,5 +1,6 @@
 #!/bin/env python3
 #coding=ASCII
+import asyncio
 
 import inspect
 import itertools
@@ -18,7 +19,7 @@ import pyvisa
 from pyvisa.resources.messagebased import MessageBasedResource as Connection
 
 from ops.ecris.devices.motor_controller import MotorController
-from ops.ecris.drivers.keithley import Keithley
+from ops.ecris.drivers.keithley import Keithley, SCPIDriver
 import venus_data_utils.venusplc as venusplc
 
 env_config = dotenv_values(".env")
@@ -76,7 +77,7 @@ def setupSystem(verbose=0):
 
     return connection
 
-def connect_motor_controller() -> MotorController:
+async def connect_motor_controller() -> MotorController:
     try:
         temp_port = env_config["MOTOR_CONTROLLER_PORT"]
         if temp_port is None:
@@ -87,10 +88,18 @@ def connect_motor_controller() -> MotorController:
     ip = env_config["MOTOR_CONTROLLER_PORT"]
     if ip is None:
         raise KeyError(".env file requires MOTOR_CONTROLLER_PORT")
-    return MotorController(ip = ip, port = port)
+    motor_controller = MotorController(ip = ip, port = port)
+    await motor_controller.connect()
+    return motor_controller
 
-def connect_keithley(module_usb: str) -> Keithley:
-    return Keithley.connect_at_usb(resource_name=module_usb, aperture_time=1e-3)
+async def connect_keithley(module_usb: str) -> Keithley:
+    keithley = Keithley.connect_at_usb(resource_name=module_usb, aperture_time=1e-3)
+    await keithley.connect()
+    await keithley.send_silent_command(SCPIDriver.Commands.VOLTAGE_AUTOZERO_OFF)
+    await keithley.send_silent_command(SCPIDriver.Commands.VOLTAGE_DELAY_DISABLE)
+    await keithley.send_silent_command(SCPIDriver.Commands.VOLTAGE_AUTO_RANGE_OFF)
+    await keithley.send_silent_command(SCPIDriver.Commands.set_voltage_range(100e-3))
+    return keithley
 
 def getCurrent(connection: Connection):
     return float(connection.query(":meas:curr?"))
@@ -98,8 +107,8 @@ def getCurrent(connection: Connection):
     # return float(connection.read_until(b'\n').decode("ascii")[-15:-2])
 
 connection = setupSystem(verbose=0)
-motor_controller = connect_motor_controller()
-emittance_keithley = connect_keithley(MODULE_1_USB)
+motor_controller = asyncio.run(connect_motor_controller())
+emittance_keithley = asyncio.run(connect_keithley(MODULE_1_USB))
 
 ################ done setting up faster Ammeter
 ################ stuff to set up LabJack
