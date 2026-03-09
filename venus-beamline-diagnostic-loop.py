@@ -22,6 +22,7 @@ from ops.ecris.devices.ammeter import BiasedAmmeter
 from ops.ecris.devices.biases import SCALE_VALUE
 from ops.ecris.devices.motor_controller import MotorController, Axis
 from ops.ecris.drivers.keithley import Keithley, SCPIDriver
+from ops.ecris.drivers.labjack import LabJack
 import venus_data_utils.venusplc as venusplc
 
 env_config = dotenv_values(".env")
@@ -124,7 +125,8 @@ emittance_keithley = asyncio.run(connect_keithley(MODULE_1_USB))
 ################ done setting up faster Ammeter
 ################ stuff to set up LabJack
 
-handle = ljm.openS("T8", "usb", "ANY")
+labjack = LabJack()
+handle = labjack._handle
 
 
 def getB():
