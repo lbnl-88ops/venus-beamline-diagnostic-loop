@@ -18,6 +18,8 @@ from dotenv import dotenv_values
 import pyvisa
 from pyvisa.resources.messagebased import MessageBasedResource as Connection
 
+from ops.ecris.devices.ammeter import BiasedAmmeter
+from ops.ecris.devices.biases import SCALE_VALUE
 from ops.ecris.devices.motor_controller import MotorController, Axis
 from ops.ecris.drivers.keithley import Keithley, SCPIDriver
 import venus_data_utils.venusplc as venusplc
@@ -437,6 +439,11 @@ while again:
         #    For example, with -10,10,3, there are 7.666 steps, and what I would do is round up
         #    so that this is really np.linspace(-10,10,int(ceiling((max-min)/stepsize)+1))
         leave_scanner_in = venus.read(["emittance_leave_in"])
+        scaling_factor = int(venus.read(["emittance_keithley_multiplier"]))
+        if last_scaling_factor is None or scaling_factor != last_scaling_factor:
+            scanner_ammeter = BiasedAmmeter(connection=emittance_keithley, read_key=Keithley.DataKeys.VOLTAGE, bias_function=SCALE_VALUE(10**scaling_factor))
+
+
         JessicaCallsMagicEmittance(
             venus.read(["emittance_direction"]),
             venus.read(["emittance_position_min"]),
@@ -445,7 +452,7 @@ while again:
             venus.read(["emittance_divergence_min"]),
             venus.read(["emittance_divergence_max"]),
             venus.read(["emittance_divergence_step"]),
-            venus.read(["emittance_keithley_multiplier"]),
+            ),
             leave_scanner_in,
         )
         ### NOTE: keithley multiplier is an integer:  turn to 10Einteger
