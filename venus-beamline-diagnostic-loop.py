@@ -18,15 +18,23 @@ from dotenv import dotenv_values
 import pyvisa
 from pyvisa.resources.messagebased import MessageBasedResource as Connection
 
-from ops.ecris.devices.ammeter import BiasedAmmeter
-from ops.ecris.devices.biases import SCALE_VALUE
-from ops.ecris.devices.motor_controller import MotorController, Axis
+# Drivers
 from ops.ecris.drivers.keithley import Keithley, SCPIDriver
 from ops.ecris.drivers.labjack import LabJack
+from ops.ecris.drivers.venus_plc import VenusPLC
+# Devices
+from ops.ecris.devices.ammeter import BiasedAmmeter
+from ops.ecris.devices.deflection_plate_controller import DeflectionPlateController, LABJACK_DEFLECTION_PLATE_BIAS
+from ops.ecris.devices.power_supply import BiasedVoltageSource, Voltmeter
+from ops.ecris.devices.motor_controller import MotorController, Axis
+# Device biases
+from ops.ecris.devices.biases import SCALE_VALUE, POSITIVE_VALUES_ONLY
+
 import venus_data_utils.venusplc as venusplc
 
 env_config = dotenv_values(".env")
 venus = venusplc.VENUSController(read_only=False)
+venus_plc_driver = VenusPLC(venus)
 
 # default M/Q range used for fast CSD button on main tuning screen
 mq_min_default = 0.84
@@ -127,6 +135,12 @@ emittance_keithley = asyncio.run(connect_keithley(MODULE_1_USB))
 
 labjack = LabJack()
 handle = labjack._handle
+
+# Set up emittance scan deflection plate controller
+dpc = DeflectionPlateController(
+    extraction_voltmeter = Voltmeter(connection=venus_plc_driver, read_key=VenusPLC.DataKeys.EXTRACTION_VOLTAGE),
+    deflection_voltage_source=BiasedVoltageSource(connection=labjack, set_key=LabJack.DataKeys.DAC1, bias_function=LABJACK_DEFLECTION_PLATE_BIAS)
+)
 
 
 def getB():
@@ -442,6 +456,10 @@ while again:
         #    so that this is really np.linspace(-10,10,int(ceiling((max-min)/stepsize)+1))
         leave_scanner_in = venus.read(["emittance_leave_in"])
         scaling_factor = int(venus.read(["emittance_keithley_multiplier"]))
+
+        # Set up ammeter if not done so, or if scaling factor has changed, 
+        # note that this is an ammeter that is using a read key for VOLTAGE,
+        # because we are reading current via voltage, as adjusted by the scaling_factor
         if last_scaling_factor is None or scaling_factor != last_scaling_factor:
             scanner_ammeter = BiasedAmmeter(connection=emittance_keithley, read_key=Keithley.DataKeys.VOLTAGE, bias_function=SCALE_VALUE(10**scaling_factor))
 
