@@ -1,6 +1,7 @@
 #!/bin/env python3
 # coding=ASCII
 import asyncio
+from pathlib import Path
 
 import inspect
 import itertools
@@ -15,6 +16,7 @@ from labjack import ljm  # for communication with LabJack
 import os
 
 from dotenv import dotenv_values
+from ops.ecris.drivers import keithley
 import pyvisa
 from pyvisa.resources.messagebased import MessageBasedResource as Connection
 
@@ -22,13 +24,25 @@ from pyvisa.resources.messagebased import MessageBasedResource as Connection
 from ops.ecris.drivers.keithley import Keithley, SCPIDriver
 from ops.ecris.drivers.labjack import LabJack
 from ops.ecris.drivers.venus_plc import VenusPLC
+
 # Devices
 from ops.ecris.devices.ammeter import BiasedAmmeter
-from ops.ecris.devices.deflection_plate_controller import DeflectionPlateController, LABJACK_DEFLECTION_PLATE_BIAS
+from ops.ecris.devices.deflection_plate_controller import (
+    DeflectionPlateController,
+    LABJACK_DEFLECTION_PLATE_BIAS,
+)
 from ops.ecris.devices.power_supply import BiasedVoltageSource, Voltmeter
 from ops.ecris.devices.motor_controller import MotorController, Axis
+
 # Device biases
-from ops.ecris.devices.biases import SCALE_VALUE, POSITIVE_VALUES_ONLY
+from ops.ecris.devices.biases import SCALE_VALUE
+
+# Operations
+from ops.ecris.operations.emittance_scan import (
+    LinearEmittanceScan,
+    LinearScanParameters,
+)
+from ops.ecris.operations.emittance_scan.save_scan import save_emittance_scan
 
 import venus_data_utils.venusplc as venusplc
 
@@ -43,7 +57,7 @@ n_csd_steps_default = 1200
 
 # set directory to save csds
 directory = "/data/csds/"
-emittance_scan_directory = "/data/emittance/"
+emittance_scan_directory = Path("/data/emittance/")
 MODULE_1_USB = "USB0::1510::29970::04684146\x00\x00::0::INSTR"
 MODULE_2_USB = "USB0::1510::29970::04684147\x00\x00::0::INSTR"
 
@@ -138,8 +152,14 @@ handle = labjack._handle
 
 # Set up emittance scan deflection plate controller
 dpc = DeflectionPlateController(
-    extraction_voltmeter = Voltmeter(connection=venus_plc_driver, read_key=VenusPLC.DataKeys.EXTRACTION_VOLTAGE),
-    deflection_voltage_source=BiasedVoltageSource(connection=labjack, set_key=LabJack.DataKeys.DAC1, bias_function=LABJACK_DEFLECTION_PLATE_BIAS)
+    extraction_voltmeter=Voltmeter(
+        connection=venus_plc_driver, read_key=VenusPLC.DataKeys.EXTRACTION_VOLTAGE
+    ),
+    deflection_voltage_source=BiasedVoltageSource(
+        connection=labjack,
+        set_key=LabJack.DataKeys.DAC1,
+        bias_function=LABJACK_DEFLECTION_PLATE_BIAS,
+    ),
 )
 
 
@@ -346,6 +366,7 @@ treadagain = time.time()
 tlastave = time.time()
 tlastautozero = time.time()
 last_scaling_factor = None
+scanner_ammeter = None
 while again:
     if time.time() - tlastautozero > 600:
         sendCommand(connection, ":sens:azer:once")
@@ -457,24 +478,56 @@ while again:
         leave_scanner_in = venus.read(["emittance_leave_in"])
         scaling_factor = int(venus.read(["emittance_keithley_multiplier"]))
 
-        # Set up ammeter if not done so, or if scaling factor has changed, 
+        # Set up ammeter if not done so, or if scaling factor has changed,
         # note that this is an ammeter that is using a read key for VOLTAGE,
         # because we are reading current via voltage, as adjusted by the scaling_factor
-        if last_scaling_factor is None or scaling_factor != last_scaling_factor:
-            scanner_ammeter = BiasedAmmeter(connection=emittance_keithley, read_key=Keithley.DataKeys.VOLTAGE, bias_function=SCALE_VALUE(10**scaling_factor))
-
-
-        JessicaCallsMagicEmittance(
-            venus.read(["emittance_direction"]),
-            venus.read(["emittance_position_min"]),
-            venus.read(["emittance_position_max"]),
-            venus.read(["emittance_position_step"]),
-            venus.read(["emittance_divergence_min"]),
-            venus.read(["emittance_divergence_max"]),
-            venus.read(["emittance_divergence_step"]),
-            ),
-            leave_scanner_in,
+        if (
+            scanner_ammeter is None
+            or last_scaling_factor is None
+            or scaling_factor != last_scaling_factor
+        ):
+            scanner_ammeter = BiasedAmmeter(
+                connection=emittance_keithley,
+                read_key=Keithley.DataKeys.VOLTAGE,
+                bias_function=SCALE_VALUE(10**scaling_factor),
+            )
+            last_scaling_factor = scaling_factor
+        scan_parameters = LinearScanParameters(
+            axis=Axis.VenusY if venus.read(["emittance_direction"]) else Axis.VenusX,
+            position_min=venus.read(["emittance_position_min"]),
+            position_max=venus.read(["emittance_position_max"]),
+            position_step=venus.read(["emittance_position_step"]),
+            divergence_min=venus.read(["emittance_divergence_min"]),
+            divergence_max=venus.read(["emittance_divergence_max"]),
+            divergence_step=venus.read(["emittance_divergence_step"]),
+            samples_per_point=1,
         )
+
+        async def is_fcv1_out() -> bool:
+            # fcv1_in is True when IN (blocking), False when OUT (clear)
+            return not bool(
+                await venus_plc_driver.read_data(VenusPLC.DataKeys.FARADAY_CUP_IN)
+            )
+
+        scan_operation = LinearEmittanceScan(
+            motor=motor_controller,
+            ammeter=scanner_ammeter,
+            deflection_plate_controller=dpc,
+            scan_params=scan_parameters,
+            interlock_check=is_fcv1_out,
+        )
+        asyncio.run(
+            emittance_keithley.send_silent_command(SCPIDriver.Commands.AUTOZERO_ONCE)
+        )
+        results = asyncio.run(scan_operation.run(keep_centered=leave_scanner_in))
+
+        tnowstr = str(int(time.time()))
+        save_emittance_scan(
+            emittance_scan_directory / f"emittance_scan_{tnowstr}.h5",
+            data=results,
+            parameters=scan_parameters,
+        )
+
         ### NOTE: keithley multiplier is an integer:  turn to 10Einteger
         venus.write({"emittance_scan_in_progress": 0})
         formatted_time = nowdt.strftime("%Y-%m-%d %H:%M:%S")
