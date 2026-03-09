@@ -502,6 +502,8 @@ while again:
             divergence_step=venus.read(["emittance_divergence_step"]),
             samples_per_point=1,
         )
+        print("Performing emittance scan with parameters:")
+        print(scan_parameters)
 
         async def is_fcv1_out() -> bool:
             # fcv1_in is True when IN (blocking), False when OUT (clear)
