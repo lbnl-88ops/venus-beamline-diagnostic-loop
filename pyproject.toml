@@ -8,6 +8,7 @@ authors = [
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "ops-ecris @ git+https://github.com/lbnl-88ops/ecris.git@v1.0.0"
 ]
 
 
