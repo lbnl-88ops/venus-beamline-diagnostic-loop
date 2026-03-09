@@ -18,6 +18,7 @@ import pyvisa
 from pyvisa.resources.messagebased import MessageBasedResource as Connection
 
 from ops.ecris.devices.motor_controller import MotorController
+from ops.ecris.drivers.keithley import Keithley
 import venus_data_utils.venusplc as venusplc
 
 env_config = dotenv_values(".env")
@@ -88,6 +89,9 @@ def connect_motor_controller() -> MotorController:
         raise KeyError(".env file requires MOTOR_CONTROLLER_PORT")
     return MotorController(ip = ip, port = port)
 
+def connect_keithley(module_usb: str) -> Keithley:
+    return Keithley.connect_at_usb(resource_name=module_usb, aperture_time=1e-3)
+
 def getCurrent(connection: Connection):
     return float(connection.query(":meas:curr?"))
     # sendCommand(connection,":meas:curr?")
@@ -95,6 +99,7 @@ def getCurrent(connection: Connection):
 
 connection = setupSystem(verbose=0)
 motor_controller = connect_motor_controller()
+emittance_keithley = connect_keithley(MODULE_1_USB)
 
 ################ done setting up faster Ammeter
 ################ stuff to set up LabJack
