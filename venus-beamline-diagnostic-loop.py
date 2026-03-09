@@ -10,15 +10,17 @@ import numpy as np
 import datetime
 import time
 import statistics
-import telnetlib    # for communication with ammeter
 from labjack import ljm    # for communication with LabJack
 import os
 
+from dotenv import dotenv_values
 import pyvisa
 from pyvisa.resources.messagebased import MessageBasedResource as Connection
 
+from ops.ecris.devices.motor_controller import MotorController
 import venus_data_utils.venusplc as venusplc
-        
+
+env_config = dotenv_values(".env")
 venus = venusplc.VENUSController(read_only=False)
 
 # default M/Q range used for fast CSD button on main tuning screen
@@ -28,6 +30,9 @@ n_csd_steps_default = 1200
 
 # set directory to save csds
 directory = "/data/csds/"
+emittance_scan_directory = "/data/emittance/"
+MODULE_1_USB = 'USB0::1510::29970::04684146\x00\x00::0::INSTR'
+MODULE_2_USB = 'USB0::1510::29970::04684147\x00\x00::0::INSTR'
 
 # names that are strings
 stringnames = ['beam_element']
@@ -39,9 +44,6 @@ def sendCommand(connection: Connection,command):
     connection.write(command)
 
 def setupSystem(verbose=0):
-    MODULE_1_USB = 'USB0::1510::29970::04684146\x00\x00::0::INSTR'
-    MODULE_2_USB = 'USB0::1510::29970::04684147\x00\x00::0::INSTR'
-
     # Connect to Ammeter
     if verbose:   print('attempt to connect...')
     rm = pyvisa.ResourceManager()
@@ -73,12 +75,26 @@ def setupSystem(verbose=0):
 
     return connection
 
+def connect_motor_controller() -> MotorController:
+    try:
+        temp_port = env_config["MOTOR_CONTROLLER_PORT"]
+        if temp_port is None:
+            raise KeyError(".env file requires MOTOR_CONTROLLER_PORT")
+        port = int(temp_port)
+    except ValueError:
+        raise ValueError("Invalid MOTOR_CONTROLLER_PORT")
+    ip = env_config["MOTOR_CONTROLLER_PORT"]
+    if ip is None:
+        raise KeyError(".env file requires MOTOR_CONTROLLER_PORT")
+    return MotorController(ip = ip, port = port)
+
 def getCurrent(connection: Connection):
     return float(connection.query(":meas:curr?"))
     # sendCommand(connection,":meas:curr?")
     # return float(connection.read_until(b'\n').decode("ascii")[-15:-2])
 
 connection = setupSystem(verbose=0)
+motor_controller = connect_motor_controller()
 
 ################ done setting up faster Ammeter
 ################ stuff to set up LabJack
