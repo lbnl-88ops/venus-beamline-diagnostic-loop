@@ -2,6 +2,7 @@
 # coding=ASCII
 import asyncio
 from pathlib import Path
+import logging
 
 import inspect
 import itertools
@@ -18,6 +19,7 @@ import os
 from dotenv import dotenv_values
 from ops.ecris.drivers import keithley
 import pyvisa
+from pyvisa.resources import MessageBasedResource
 from pyvisa.resources.messagebased import MessageBasedResource as Connection
 
 # Drivers
@@ -45,6 +47,8 @@ from ops.ecris.operations.emittance_scan import (
 from ops.ecris.operations.emittance_scan.save_scan import save_emittance_scan
 
 import venus_data_utils.venusplc as venusplc
+logging.basicConfig(level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %(message)s")
+_log = logging.getLogger()
 
 env_config = dotenv_values(".env")
 venus = venusplc.VENUSController(read_only=False)
@@ -67,6 +71,10 @@ stringnames = ["beam_element"]
 ############## stuff to set up faster Ammeter
 measurementFrequency = 1000
 
+# Async setup
+loop = asyncio.new_event_loop()
+asyncio.set_event_loop(loop)
+
 
 def sendCommand(connection: Connection, command):
     connection.write(command)
@@ -77,7 +85,7 @@ def setupSystem(verbose=0):
     if verbose:
         print("attempt to connect...")
     rm = pyvisa.ResourceManager()
-    connection: Connection = rm.open_resource(MODULE_2_USB)
+    connection: MessageBasedResource = rm.open_resource(MODULE_2_USB)
     # sendCommand(connection,'*lang scpi')
     # output = connection.query('*idn?')
     # if verbose:   print('connected.  Output: ',output,'\nResetting system')
@@ -116,11 +124,11 @@ async def connect_motor_controller() -> MotorController:
         port = int(temp_port)
     except ValueError:
         raise ValueError("Invalid MOTOR_CONTROLLER_PORT")
-    ip = env_config["MOTOR_CONTROLLER_PORT"]
+    ip = env_config["MOTOR_CONTROLLER_IP"]
     if ip is None:
-        raise KeyError(".env file requires MOTOR_CONTROLLER_PORT")
+        raise KeyError(".env file requires MOTOR_CONTROLLER_IP")
     motor_controller = MotorController(ip=ip, port=port)
-    await motor_controller.connect()
+    await asyncio.wait_for(motor_controller.connect(), timeout=20)
     return motor_controller
 
 
@@ -141,13 +149,14 @@ def getCurrent(connection: Connection):
 
 
 connection = setupSystem(verbose=0)
-motor_controller = asyncio.run(connect_motor_controller())
-emittance_keithley = asyncio.run(connect_keithley(MODULE_1_USB))
+motor_controller = loop.run_until_complete(connect_motor_controller())
+emittance_keithley = loop.run_until_complete(connect_keithley(MODULE_1_USB))
 
 ################ done setting up faster Ammeter
 ################ stuff to set up LabJack
 
 labjack = LabJack()
+loop.run_until_complete(labjack.connect())
 handle = labjack._handle
 
 # Set up emittance scan deflection plate controller
@@ -164,11 +173,13 @@ dpc = DeflectionPlateController(
 
 
 def getB():
+    # B = asyncio.run(labjack.read_data(LabJack.DataKeys.AIN0))
     B = ljm.eReadName(handle, "AIN0")
     return B * 0.4  # hall probe has 2 T as 5 V
 
 
 def setBatman(current):
+    # asyncio.run(labjack.write_data(LabJack.DataKeys.DAC0, value=current*0.04))
     ljm.eWriteName(handle, "DAC0", current * 0.04)
 
 
@@ -359,6 +370,7 @@ def maximizeCurrent():
 
 # reset just in case
 venus.write({"csd_in_progress": 0})
+venus.write({"emittance_scan_in_progress": 0})
 
 again = 1
 ibatmanlast = venus.read(["batman_i"])
@@ -452,9 +464,11 @@ while again:
                 )
             )
 
-    if venus.read(["emittance_retract_axis"]):
-        asyncio.run(motor_controller.move_axis_to_positive_eof(Axis.VenusX))
-        asyncio.run(motor_controller.move_axis_to_positive_eof(Axis.VenusY))
+    if venus.read(["emittance_retract_scanners"]):
+        _log.info("Extracting Venus.X")
+        loop.run_until_complete(motor_controller.move_axis_to_positive_eof(Axis.VenusX))
+        _log.info("Extracting Venus.Y")
+        # asyncio.run(motor_controller.move_axis_to_positive_eof(Axis.VenusY))
 
     if venus.read(["emittance_scan_request"]):
         faraday_cup_in = 0
@@ -475,7 +489,7 @@ while again:
         #    like the following is requested: -10,10,3.  What I would suggest is to round up.
         #    For example, with -10,10,3, there are 7.666 steps, and what I would do is round up
         #    so that this is really np.linspace(-10,10,int(ceiling((max-min)/stepsize)+1))
-        leave_scanner_in = venus.read(["emittance_leave_in"])
+        leave_scanner_in = venus.read(["emittance_leave_scanner_in"])
         scaling_factor = int(venus.read(["emittance_keithley_multiplier"]))
 
         # Set up ammeter if not done so, or if scaling factor has changed,
@@ -518,10 +532,10 @@ while again:
             scan_params=scan_parameters,
             interlock_check=is_fcv1_out,
         )
-        asyncio.run(
+        loop.run_until_complete(
             emittance_keithley.send_silent_command(SCPIDriver.Commands.AUTOZERO_ONCE)
         )
-        results = asyncio.run(scan_operation.run(keep_centered=leave_scanner_in))
+        results = loop.run_until_complete(scan_operation.run(keep_centered=leave_scanner_in))
 
         tnowstr = str(int(time.time()))
         save_emittance_scan(
@@ -532,6 +546,7 @@ while again:
 
         ### NOTE: keithley multiplier is an integer:  turn to 10Einteger
         venus.write({"emittance_scan_in_progress": 0})
+        nowdt = datetime.datetime.now()
         formatted_time = nowdt.strftime("%Y-%m-%d %H:%M:%S")
         with open(directory + "log", "a") as f:
             f.write(
@@ -549,4 +564,5 @@ while again:
 
 ###  done with CSD functions
 connection.close()  # close connnection to Ammeter
+loop.run_until_complete(emittance_keithley.disconnect())
 ljm.close(handle)  # close connection to labjack
