@@ -46,8 +46,11 @@ from ops.ecris.operations.emittance_scan import (
 from ops.ecris.operations.emittance_scan.save_scan import save_emittance_scan
 
 import venus_data_utils.venusplc as venusplc
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
-_log = logging.getLogger('ops')
+
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+)
+_log = logging.getLogger("ops")
 
 env_config = dotenv_values(".env")
 venus = venusplc.VENUSController(read_only=False)
@@ -132,8 +135,11 @@ async def connect_motor_controller() -> MotorController:
 
 
 async def connect_keithley(module_usb: str) -> Keithley:
-    keithley = Keithley.connect_at_usb(resource_name=module_usb, aperture_time=1e-3, 
-                                       mode=SCPIDriver.MeasurementMode.VOLTAGE)
+    keithley = Keithley.connect_at_usb(
+        resource_name=module_usb,
+        aperture_time=1e-3,
+        mode=SCPIDriver.MeasurementMode.VOLTAGE,
+    )
     await keithley.connect()
     await keithley.send_silent_command(SCPIDriver.Commands.VOLTAGE_FUNCTION)
     await keithley.send_silent_command(SCPIDriver.Commands.VOLTAGE_AUTOZERO_OFF)
@@ -494,9 +500,9 @@ while again:
         #    For example, with -10,10,3, there are 7.666 steps, and what I would do is round up
         #    so that this is really np.linspace(-10,10,int(ceiling((max-min)/stepsize)+1))
         leave_scanner_in = venus.read(["emittance_leave_scanner_in"])
-        scaling_factor = int(venus.read(["emittance_keithley_multiplier"])) 
+        scaling_factor = int(venus.read(["emittance_keithley_multiplier"]))
         scan_times.append(time.time())
-        _log.info(f'Time to read venus: {scan_times[-1] - scan_times[-2]}')
+        _log.info(f"Time to read venus: {scan_times[-1] - scan_times[-2]}")
 
         # Set up ammeter if not done so, or if scaling factor has changed,
         # note that this is an ammeter that is using a read key for VOLTAGE,
@@ -540,24 +546,31 @@ while again:
         )
 
         scan_times.append(time.time())
-        _log.info(f'Setup time: {scan_times[-1] - scan_times[-2]}')
+        _log.info(f"Setup time: {scan_times[-1] - scan_times[-2]}")
         loop.run_until_complete(
             emittance_keithley.send_silent_command(SCPIDriver.Commands.AUTOZERO_ONCE)
         )
         scan_times.append(time.time())
-        _log.info(f'Auto-zero time: {scan_times[-1] - scan_times[-2]}')
-        results = loop.run_until_complete(scan_operation.run(keep_centered=leave_scanner_in, disconnect_on_end=False))
+        _log.info(f"Auto-zero time: {scan_times[-1] - scan_times[-2]}")
+        results = loop.run_until_complete(
+            scan_operation.run(keep_centered=leave_scanner_in, disconnect_on_end=False)
+        )
         scan_times.append(time.time())
-        _log.info(f'Data collection time: {scan_times[-1] - scan_times[-2]}')
+        _log.info(f"Data collection time: {scan_times[-1] - scan_times[-2]}")
 
         tnowstr = str(int(time.time()))
+        datasheet_data = {}
+        for var in venus.read_vars():
+            datasheet_data[var] = venus.read(var)
+
         save_emittance_scan(
             emittance_scan_directory / f"emittance_scan_{tnowstr}.h5",
             data=results,
             parameters=scan_parameters,
+            additional_metadata=datasheet_data,
         )
         scan_times.append(time.time())
-        _log.info(f'Save time: {scan_times[-1] - scan_times[-2]}')
+        _log.info(f"Save time: {scan_times[-1] - scan_times[-2]}")
 
         ### NOTE: keithley multiplier is an integer:  turn to 10Einteger
         venus.write({"emittance_scan_in_progress": 0})
