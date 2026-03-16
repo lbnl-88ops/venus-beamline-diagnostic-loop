@@ -17,7 +17,6 @@ from labjack import ljm  # for communication with LabJack
 import os
 
 from dotenv import dotenv_values
-from ops.ecris.drivers import keithley
 import pyvisa
 from pyvisa.resources import MessageBasedResource
 from pyvisa.resources.messagebased import MessageBasedResource as Connection
@@ -47,8 +46,8 @@ from ops.ecris.operations.emittance_scan import (
 from ops.ecris.operations.emittance_scan.save_scan import save_emittance_scan
 
 import venus_data_utils.venusplc as venusplc
-logging.basicConfig(level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %(message)s")
-_log = logging.getLogger()
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+_log = logging.getLogger('ops')
 
 env_config = dotenv_values(".env")
 venus = venusplc.VENUSController(read_only=False)
@@ -133,8 +132,10 @@ async def connect_motor_controller() -> MotorController:
 
 
 async def connect_keithley(module_usb: str) -> Keithley:
-    keithley = Keithley.connect_at_usb(resource_name=module_usb, aperture_time=1e-3)
+    keithley = Keithley.connect_at_usb(resource_name=module_usb, aperture_time=1e-3, 
+                                       mode=SCPIDriver.MeasurementMode.VOLTAGE)
     await keithley.connect()
+    await keithley.send_silent_command(SCPIDriver.Commands.VOLTAGE_FUNCTION)
     await keithley.send_silent_command(SCPIDriver.Commands.VOLTAGE_AUTOZERO_OFF)
     await keithley.send_silent_command(SCPIDriver.Commands.VOLTAGE_DELAY_DISABLE)
     await keithley.send_silent_command(SCPIDriver.Commands.VOLTAGE_AUTO_RANGE_OFF)
@@ -379,6 +380,7 @@ tlastave = time.time()
 tlastautozero = time.time()
 last_scaling_factor = None
 scanner_ammeter = None
+_log.info("Initialization complete, starting current loop...")
 while again:
     if time.time() - tlastautozero > 600:
         sendCommand(connection, ":sens:azer:once")
@@ -468,6 +470,7 @@ while again:
         _log.info("Extracting Venus.X")
         loop.run_until_complete(motor_controller.move_axis_to_positive_eof(Axis.VenusX))
         _log.info("Extracting Venus.Y")
+        tlastave = time.time()
         # asyncio.run(motor_controller.move_axis_to_positive_eof(Axis.VenusY))
 
     if venus.read(["emittance_scan_request"]):
@@ -480,6 +483,7 @@ while again:
                 time.sleep(0.1)
 
         tscanstart = time.time()
+        scan_times = [tscanstart]
         venus.write({"emittance_scan_in_progress": 1})
         # This function should be fiddled with by Jessica.  It is being passed, in
         #   order: direction, position min, position max, position step size,
@@ -490,7 +494,9 @@ while again:
         #    For example, with -10,10,3, there are 7.666 steps, and what I would do is round up
         #    so that this is really np.linspace(-10,10,int(ceiling((max-min)/stepsize)+1))
         leave_scanner_in = venus.read(["emittance_leave_scanner_in"])
-        scaling_factor = int(venus.read(["emittance_keithley_multiplier"]))
+        scaling_factor = int(venus.read(["emittance_keithley_multiplier"])) 
+        scan_times.append(time.time())
+        _log.info(f'Time to read venus: {scan_times[-1] - scan_times[-2]}')
 
         # Set up ammeter if not done so, or if scaling factor has changed,
         # note that this is an ammeter that is using a read key for VOLTAGE,
@@ -532,10 +538,17 @@ while again:
             scan_params=scan_parameters,
             interlock_check=is_fcv1_out,
         )
+
+        scan_times.append(time.time())
+        _log.info(f'Setup time: {scan_times[-1] - scan_times[-2]}')
         loop.run_until_complete(
             emittance_keithley.send_silent_command(SCPIDriver.Commands.AUTOZERO_ONCE)
         )
-        results = loop.run_until_complete(scan_operation.run(keep_centered=leave_scanner_in))
+        scan_times.append(time.time())
+        _log.info(f'Auto-zero time: {scan_times[-1] - scan_times[-2]}')
+        results = loop.run_until_complete(scan_operation.run(keep_centered=leave_scanner_in, disconnect_on_end=False))
+        scan_times.append(time.time())
+        _log.info(f'Data collection time: {scan_times[-1] - scan_times[-2]}')
 
         tnowstr = str(int(time.time()))
         save_emittance_scan(
@@ -543,6 +556,8 @@ while again:
             data=results,
             parameters=scan_parameters,
         )
+        scan_times.append(time.time())
+        _log.info(f'Save time: {scan_times[-1] - scan_times[-2]}')
 
         ### NOTE: keithley multiplier is an integer:  turn to 10Einteger
         venus.write({"emittance_scan_in_progress": 0})
@@ -555,6 +570,7 @@ while again:
         print(f"{formatted_time} emittance scan time = {time.time() - tscanstart:.1f}")
         if faraday_cup_in == 1 and not (leave_scanner_in):
             venus.write({"fcv1_in": True})  # put Faraday Cup back in
+        tlastave = time.time()
 
     if time.time() - treadagain >= 5:
         with open("again", "r") as f:
