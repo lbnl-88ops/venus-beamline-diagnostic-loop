@@ -561,7 +561,7 @@ while again:
         tnowstr = str(int(time.time()))
         datasheet_data = {}
         for var in venus.read_vars():
-            datasheet_data[var] = venus.read(var)
+            datasheet_data[var] = venus.read([var])
 
         save_emittance_scan(
             emittance_scan_directory / f"emittance_scan_{tnowstr}.h5",
