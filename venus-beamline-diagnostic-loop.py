@@ -25,6 +25,7 @@ from pyvisa.resources.messagebased import MessageBasedResource as Connection
 from ops.ecris.drivers.keithley import Keithley, SCPIDriver
 from ops.ecris.drivers.labjack import LabJack
 from ops.ecris.drivers.venus_plc import VenusPLC
+from ops.ecris.devices.exceptions import InterlockError
 
 # Devices
 from ops.ecris.devices.ammeter import BiasedAmmeter
@@ -481,12 +482,12 @@ while again:
 
     if venus.read(["emittance_scan_request"]):
         faraday_cup_in = 0
-        if venus.read(["fcv1_in"]):  # checking if faraday cup is in
-            venus.write({"fcv1_in": False})  # if it is, take it out
-            faraday_cup_in = 1
-            time.sleep(1)  # let it start going out
-            while venus.read(["fcv1_in"]):
-                time.sleep(0.1)
+        # if venus.read(["fcv1_in"]):  # checking if faraday cup is in
+        #     venus.write({"fcv1_in": False})  # if it is, take it out
+        #     faraday_cup_in = 1
+        #     time.sleep(1)  # let it start going out
+        #     while venus.read(["fcv1_in"]):
+                # time.sleep(0.1)
 
         tscanstart = time.time()
         scan_times = [tscanstart]
@@ -515,7 +516,7 @@ while again:
             scanner_ammeter = BiasedAmmeter(
                 connection=emittance_keithley,
                 read_key=Keithley.DataKeys.VOLTAGE,
-                bias_function=SCALE_VALUE(10**scaling_factor),
+                bias_function=SCALE_VALUE(-10**(-scaling_factor)),
             )
             last_scaling_factor = scaling_factor
         scan_parameters = LinearScanParameters(
@@ -552,9 +553,13 @@ while again:
         )
         scan_times.append(time.time())
         _log.info(f"Auto-zero time: {scan_times[-1] - scan_times[-2]}")
-        results = loop.run_until_complete(
-            scan_operation.run(keep_centered=leave_scanner_in, disconnect_on_end=False)
-        )
+        try:
+            results = loop.run_until_complete(
+                scan_operation.run(keep_centered=leave_scanner_in, disconnect_on_end=False)
+            )
+        except InterlockError as e:
+            print(e)
+            return
         scan_times.append(time.time())
         _log.info(f"Data collection time: {scan_times[-1] - scan_times[-2]}")
 
