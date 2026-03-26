@@ -548,44 +548,48 @@ while again:
 
         scan_times.append(time.time())
         _log.info(f"Setup time: {scan_times[-1] - scan_times[-2]}")
-        loop.run_until_complete(
-            emittance_keithley.send_silent_command(SCPIDriver.Commands.AUTOZERO_ONCE)
-        )
-        scan_times.append(time.time())
-        _log.info(f"Auto-zero time: {scan_times[-1] - scan_times[-2]}")
         try:
-            results = loop.run_until_complete(
-                scan_operation.run(keep_centered=leave_scanner_in, disconnect_on_end=False)
+            loop.run_until_complete(
+                emittance_keithley.send_silent_command(SCPIDriver.Commands.AUTOZERO_ONCE)
             )
-        except InterlockError as e:
-            print(e)
-            return
-        scan_times.append(time.time())
-        _log.info(f"Data collection time: {scan_times[-1] - scan_times[-2]}")
+            scan_times.append(time.time())
+            _log.info(f"Auto-zero time: {scan_times[-1] - scan_times[-2]}")
+            try:
+                results = loop.run_until_complete(
+                    scan_operation.run(keep_centered=leave_scanner_in, disconnect_on_end=False)
+                )
+            except InterlockError as e:
+                print(e)
+                return
+            scan_times.append(time.time())
+            _log.info(f"Data collection time: {scan_times[-1] - scan_times[-2]}")
 
-        tnowstr = str(int(time.time()))
-        datasheet_data = {}
-        for var in venus.read_vars():
-            datasheet_data[var] = venus.read([var])
+            tnowstr = str(int(time.time()))
+            datasheet_data = {}
+            for var in venus.read_vars():
+                datasheet_data[var] = venus.read([var])
 
-        save_emittance_scan(
-            emittance_scan_directory / f"emittance_scan_{tnowstr}.h5",
-            data=results,
-            parameters=scan_parameters,
-            additional_metadata=datasheet_data,
-        )
-        scan_times.append(time.time())
-        _log.info(f"Save time: {scan_times[-1] - scan_times[-2]}")
+            save_emittance_scan(
+                emittance_scan_directory / f"emittance_scan_{tnowstr}.h5",
+                data=results,
+                parameters=scan_parameters,
+                additional_metadata=datasheet_data,
+            )
+            scan_times.append(time.time())
+            _log.info(f"Save time: {scan_times[-1] - scan_times[-2]}")
 
-        ### NOTE: keithley multiplier is an integer:  turn to 10Einteger
+            ### NOTE: keithley multiplier is an integer:  turn to 10Einteger
+            nowdt = datetime.datetime.now()
+            formatted_time = nowdt.strftime("%Y-%m-%d %H:%M:%S")
+            with open(directory + "log", "a") as f:
+                f.write(
+                    f"{formatted_time} emittance scan time = {time.time() - tscanstart:.1f}\n"
+                )
+            print(f"{formatted_time} emittance scan time = {time.time() - tscanstart:.1f}")
+        except InterlockError:
+            _log.error('Interlock error, emittance scan could not be performed')
+
         venus.write({"emittance_scan_in_progress": 0})
-        nowdt = datetime.datetime.now()
-        formatted_time = nowdt.strftime("%Y-%m-%d %H:%M:%S")
-        with open(directory + "log", "a") as f:
-            f.write(
-                f"{formatted_time} emittance scan time = {time.time() - tscanstart:.1f}\n"
-            )
-        print(f"{formatted_time} emittance scan time = {time.time() - tscanstart:.1f}")
         if faraday_cup_in == 1 and not (leave_scanner_in):
             venus.write({"fcv1_in": True})  # put Faraday Cup back in
         tlastave = time.time()
