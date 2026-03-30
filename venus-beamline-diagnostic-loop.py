@@ -554,13 +554,9 @@ while again:
             )
             scan_times.append(time.time())
             _log.info(f"Auto-zero time: {scan_times[-1] - scan_times[-2]}")
-            try:
-                results = loop.run_until_complete(
-                    scan_operation.run(keep_centered=leave_scanner_in, disconnect_on_end=False)
-                )
-            except InterlockError as e:
-                print(e)
-                return
+            results = loop.run_until_complete(
+                scan_operation.run(keep_centered=leave_scanner_in, disconnect_on_end=False)
+            )
             scan_times.append(time.time())
             _log.info(f"Data collection time: {scan_times[-1] - scan_times[-2]}")
 
