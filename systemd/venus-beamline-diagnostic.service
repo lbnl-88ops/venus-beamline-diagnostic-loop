@@ -1,0 +1,14 @@
+[Unit]
+Description=VENUS beam line diagnostic service
+StartLimitIntervalSec=1800
+StartLimitBurst=600
+
+[Install]
+WantedBy=default.target
+
+[Service]
+User=damon
+WorkingDirectory=/home/ecris/repos/venus-beamline-diagnostic-loop/
+ExecStart=/home/ecris/.venv/venus_data_project/bin/python3 /home/ecris/repos/venus-beamline-diagnostic-loop/venus-beamline-diagnostic-loop.py
+Restart=on-failure
+RestartSec=3s
