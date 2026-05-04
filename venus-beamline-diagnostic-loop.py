@@ -69,6 +69,12 @@ emittance_scan_directory = Path("/data/emittance/")
 MODULE_1_USB = "USB0::1510::29970::04684146\x00\x00::0::INSTR"
 MODULE_2_USB = "USB0::1510::29970::04684147\x00\x00::0::INSTR"
 
+# Fallback IPs for Ethernet connection
+MODULE_1_IP = env_config.get("MODULE_1_IP")
+MODULE_2_IP = env_config.get("MODULE_2_IP")
+
+VISA_TIMEOUT = 5000  # ms
+
 # names that are strings
 stringnames = ["beam_element"]
 
@@ -78,6 +84,7 @@ measurementFrequency = 1000
 # Async setup
 loop = asyncio.new_event_loop()
 asyncio.set_event_loop(loop)
+rm = pyvisa.ResourceManager()
 
 
 def sendCommand(connection: Connection, command):
@@ -88,23 +95,36 @@ def setupSystem(verbose=0):
     # Connect to Ammeter
     if verbose:
         print("attempt to connect...")
-    rm = pyvisa.ResourceManager()
-    connection: MessageBasedResource = rm.open_resource(MODULE_2_USB)
-    # sendCommand(connection,'*lang scpi')
-    # output = connection.query('*idn?')
-    # if verbose:   print('connected.  Output: ',output,'\nResetting system')
+    connection = None
 
+    # Try USB first
+    try:
+        connection = rm.open_resource(MODULE_2_USB)
+        _log.info(f"Connected to Ammeter via USB: {MODULE_2_USB}")
+    except Exception as e:
+        _log.warning(f"Failed to connect to Ammeter via USB: {e}")
+        if MODULE_2_IP:
+            try:
+                resource_name = f"TCPIP::{MODULE_2_IP}::INSTR"
+                connection = rm.open_resource(resource_name)
+                _log.info(f"Connected to Ammeter via Ethernet: {resource_name}")
+            except Exception as ee:
+                _log.error(f"Failed to connect to Ammeter via Ethernet: {ee}")
+
+    if connection is None:
+        raise ConnectionError("Could not connect to Ammeter via USB or Ethernet.")
+
+    configure_ammeter(connection)
+    return connection
+
+
+def configure_ammeter(connection: Connection):
+    connection.timeout = VISA_TIMEOUT
     # Reset System
     sendCommand(connection, "*rst")
-    if verbose:
-        print("reset")
     time.sleep(2)
-    if verbose:
-        print("waited 2 seconds, setting up current reading")
-
     # Setting up reading settings
     sendCommand(connection, ':sens:func "curr"')
-    # sendCommand(connection,':sens:curr:rang:auto on')
     sendCommand(connection, ":sens:curr:rang 1e-3")
     sendCommand(connection, ":sens:curr:azer off")
     sendCommand(connection, ":sens:curr:nplc:auto off")
@@ -112,12 +132,6 @@ def setupSystem(verbose=0):
     # Set integration time in terms of wall frequency: MeasTime*^60Hz
     nplc = 1.0 / measurementFrequency * 60.0
     sendCommand(connection, ":sens:curr:nplc " + str(nplc))
-    # sendCommand(connection, ':sens:curr:aper: 1e-3')
-
-    # turn on input switch
-    # sendCommand(connection,':inp on')
-
-    return connection
 
 
 async def connect_motor_controller() -> MotorController:
@@ -141,13 +155,38 @@ async def connect_motor_controller() -> MotorController:
     return motor_controller
 
 
-async def connect_keithley(module_usb: str) -> Keithley:
-    keithley = Keithley.connect_at_usb(
-        resource_name=module_usb,
-        aperture_time=1e-3,
-        mode=SCPIDriver.MeasurementMode.VOLTAGE,
-    )
-    await keithley.connect()
+async def connect_keithley(module_usb: str, module_ip: str = None) -> Keithley:
+    keithley = None
+    try:
+        keithley = Keithley.connect_at_usb(
+            resource_name=module_usb,
+            aperture_time=1e-3,
+            mode=SCPIDriver.MeasurementMode.VOLTAGE,
+        )
+        await keithley.connect()
+        _log.info(f"Connected to Keithley via USB: {module_usb}")
+    except Exception as e:
+        _log.warning(f"Failed to connect to Keithley via USB {module_usb}: {e}")
+        if module_ip:
+            try:
+                keithley = Keithley.connect_at_ip(
+                    ip=module_ip,
+                    port=5025,  # Default VXI-11 port for Keithley
+                    aperture_time=1e-3,
+                    mode=SCPIDriver.MeasurementMode.VOLTAGE,
+                )
+                await keithley.connect()
+                _log.info(f"Connected to Keithley via Ethernet: {module_ip}")
+            except Exception as ee:
+                _log.error(f"Failed to connect to Keithley via Ethernet {module_ip}: {ee}")
+
+    if keithley is None:
+        raise ConnectionError(f"Could not connect to Keithley {module_usb}/{module_ip}")
+
+    # Set shorter timeout on the underlying VISA driver if possible
+    if hasattr(keithley._connection, "_instrument") and keithley._connection._instrument:
+        keithley._connection._instrument.timeout = VISA_TIMEOUT
+
     await keithley.send_silent_command(SCPIDriver.Commands.VOLTAGE_FUNCTION)
     await keithley.send_silent_command(SCPIDriver.Commands.VOLTAGE_AUTOZERO_OFF)
     await keithley.send_silent_command(SCPIDriver.Commands.VOLTAGE_DELAY_DISABLE)
@@ -164,7 +203,7 @@ def getCurrent(connection: Connection):
 
 connection = setupSystem(verbose=0)
 motor_controller = loop.run_until_complete(connect_motor_controller())
-emittance_keithley = loop.run_until_complete(connect_keithley(MODULE_1_USB))
+emittance_keithley = loop.run_until_complete(connect_keithley(MODULE_1_USB, MODULE_1_IP))
 
 ################ done setting up faster Ammeter
 ################ stuff to set up LabJack
@@ -393,10 +432,46 @@ ibatmanlast = venus.read(["batman_i"])
 treadagain = time.time()
 tlastave = time.time()
 tlastautozero = time.time()
+tlast_usb_check = time.time()
 last_scaling_factor = None
 scanner_ammeter = None
 _log.info("Initialization complete, starting current loop...")
 while again:
+    # Periodic check to switch back to USB if we are currently on Ethernet
+    if time.time() - tlast_usb_check > 60:
+        tlast_usb_check = time.time()
+        if "TCPIP" in connection.resource_name:
+            _log.info("Currently on Ethernet, checking if USB Ammeter has recovered...")
+            try:
+                # Try to open USB resource
+                new_conn = rm.open_resource(MODULE_2_USB)
+                configure_ammeter(new_conn)
+                connection.close()
+                connection = new_conn
+                _log.info("Successfully switched back to USB Ammeter.")
+            except Exception:
+                _log.debug("USB Ammeter still unavailable.")
+
+        # Check recovery for emittance keithley
+        is_ethernet = False
+        if hasattr(emittance_keithley._connection, "resource_name"):
+            if "TCPIP" in emittance_keithley._connection.resource_name:
+                is_ethernet = True
+        else:
+            # If it's a TelnetDriver, it's also ethernet
+            is_ethernet = True
+
+        if is_ethernet:
+            _log.info("Emittance Keithley is on Ethernet, checking for USB recovery...")
+            try:
+                new_ek = loop.run_until_complete(connect_keithley(MODULE_1_USB)) # No IP means force USB
+                loop.run_until_complete(emittance_keithley.disconnect())
+                emittance_keithley = new_ek
+                scanner_ammeter = None # Force re-creation with new connection
+                _log.info("Successfully switched Emittance Keithley back to USB.")
+            except Exception:
+                _log.debug("Emittance Keithley USB still unavailable.")
+
     if time.time() - tlastautozero > 600:
         sendCommand(connection, ":sens:azer:once")
         tlastautozero = time.time()
@@ -406,7 +481,21 @@ while again:
     isq = 0.0
     while time.time() - tlastave < 0.33:
         nmeas = nmeas + 1
-        inow = getCurrent(connection)
+        try:
+            inow = getCurrent(connection)
+        except Exception as e:
+            _log.error(f"Ammeter failure, attempting to reconnect: {e}")
+            try:
+                connection.close()
+            except:
+                pass
+            try:
+                connection = setupSystem(verbose=0)
+                inow = getCurrent(connection)
+            except Exception as ee:
+                _log.error(f"Reconnection failed: {ee}")
+                inow = 0.0
+                time.sleep(1)
         iave = iave + inow
         isq = isq + inow * inow
 
@@ -468,6 +557,7 @@ while again:
         ibatmanlast = ibatmanrequest
         venus.write({"peaking_in_progress": 0})
         ##  Eventually get rid of the next lines.  Just using this to diagnose how peaking is working
+
         with open("peaking_results", "a") as fff:
             fff.write(
                 "%i %6.3f %7.3f %.5f %7.3f %.5f\n"
