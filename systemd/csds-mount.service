@@ -1,0 +1,17 @@
+[Unit]
+Description=Keep /data/csds mounted via SSHFS
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=rehak
+Group=ecris
+# The script will handle the loop and checking
+ExecStart=/bin/bash /home/rehak/repos/venus-beamline-diagnostic-loop/systemd/csds-mount.sh
+# If the loop script itself crashes, restart it
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
