@@ -26,6 +26,7 @@ from ops.ecris.drivers.keithley import Keithley, SCPIDriver
 from ops.ecris.drivers.labjack import LabJack
 from ops.ecris.drivers.venus_plc import VenusPLC
 from ops.ecris.devices.exceptions import InterlockError
+from ops.ecris.drivers.phidget import PhidgetVoltageOutput
 
 # Devices
 from ops.ecris.devices.ammeter import BiasedAmmeter
@@ -130,7 +131,12 @@ async def connect_motor_controller() -> MotorController:
     ip = env_config["MOTOR_CONTROLLER_IP"]
     if ip is None:
         raise KeyError(".env file requires MOTOR_CONTROLLER_IP")
-    motor_controller = MotorController(ip=ip, port=port)
+    fast_ramp=env_config["FAST_MOTOR_RAMP"].lower().strip() == 'true'
+    if fast_ramp:
+        print('Motor controller using fast ramping')
+    else:
+        print('Motor controller using slow ramping')
+    motor_controller = MotorController(ip=ip, port=port,fast_ramp=fast_ramp) 
     await asyncio.wait_for(motor_controller.connect(), timeout=20)
     return motor_controller
 
@@ -146,7 +152,7 @@ async def connect_keithley(module_usb: str) -> Keithley:
     await keithley.send_silent_command(SCPIDriver.Commands.VOLTAGE_AUTOZERO_OFF)
     await keithley.send_silent_command(SCPIDriver.Commands.VOLTAGE_DELAY_DISABLE)
     await keithley.send_silent_command(SCPIDriver.Commands.VOLTAGE_AUTO_RANGE_OFF)
-    await keithley.send_silent_command(SCPIDriver.Commands.set_voltage_range(100e-3))
+    await keithley.send_silent_command(SCPIDriver.Commands.set_voltage_range(10))
     return keithley
 
 
@@ -166,6 +172,8 @@ emittance_keithley = loop.run_until_complete(connect_keithley(MODULE_1_USB))
 labjack = LabJack()
 loop.run_until_complete(labjack.connect())
 handle = labjack._handle
+phidget = PhidgetVoltageOutput(serial_number=717445, channel=0)
+loop.run_until_complete(phidget.connect())
 
 # Set up emittance scan deflection plate controller
 dpc = DeflectionPlateController(
@@ -173,9 +181,9 @@ dpc = DeflectionPlateController(
         connection=venus_plc_driver, read_key=VenusPLC.DataKeys.EXTRACTION_VOLTAGE
     ),
     deflection_voltage_source=BiasedVoltageSource(
-        connection=labjack,
-        set_key=LabJack.DataKeys.DAC1,
-        bias_function=LABJACK_DEFLECTION_PLATE_BIAS,
+        connection=phidget,
+        set_key=PhidgetVoltageOutput.DataKeys.VOLTAGE,
+        bias_function=SCALE_VALUE(0.01)
     ),
 )
 
