@@ -63,6 +63,12 @@ mq_min_default = 0.84
 mq_max_default = 8.90
 n_csd_steps_default = 1200
 
+# Timing for USB reconnection check
+try:
+    USB_RECONNECT_CHECK_INTERVAL = int(env_config.get("USB_RECONNECT_CHECK_INTERVAL", 60))
+except ValueError:
+    USB_RECONNECT_CHECK_INTERVAL = 60
+
 # set directory to save csds
 directory = "/data/csds/"
 emittance_scan_directory = Path("/data/emittance/")
@@ -438,7 +444,7 @@ scanner_ammeter = None
 _log.info("Initialization complete, starting current loop...")
 while again:
     # Periodic check to switch back to USB if we are currently on Ethernet
-    if time.time() - tlast_usb_check > 60:
+    if time.time() - tlast_usb_check > USB_RECONNECT_CHECK_INTERVAL:
         tlast_usb_check = time.time()
         if "TCPIP" in connection.resource_name:
             _log.info("Currently on Ethernet, checking if USB Ammeter has recovered...")

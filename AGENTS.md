@@ -21,7 +21,7 @@
 ### Resilience Features
 - **Timeouts:** VISA resources have a default timeout of 5000ms to detect USB stalls.
 - **Ammeter Ethernet Fallback:** The Keithley ammeters will automatically fall back to Ethernet if the USB connection fails.
-- **USB Recovery Check:** Every 60 seconds, the script checks if the Ammeters are on Ethernet and attempts to switch back to USB if the device has recovered.
+- **USB Recovery Check:** Periodic checks (configurable via `USB_RECONNECT_CHECK_INTERVAL` in `.env`, defaults to 60s) attempt to switch back to USB if the device has recovered.
 - **Targeted Error Handling:** Reconnection logic is specifically applied to the Ammeter connections to address observed USB instability without adding broad complexity to other hardware paths.
 
 ### Architecture & Data
